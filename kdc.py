@@ -27,8 +27,8 @@ def new_session_key(n=16):
     return "".join(secrets.choice(KS_CHARS) for _ in range(n))
 
 
-def handle_request(keys, msg):
-    """Proses KDC_REQUEST (langkah 1), kembalikan (balasan langkah 2, ks)."""
+def check_request(keys, msg):
+    """Validasi KDC_REQUEST (langkah 1), kembalikan (id_a, id_b, n1)."""
     if msg.get("type") != "KDC_REQUEST":
         raise ValueError("Bukan KDC_REQUEST")
     id_a, id_b, n1 = msg.get("id_a"), msg.get("id_b"), str(msg.get("n1", ""))
@@ -39,19 +39,29 @@ def handle_request(keys, msg):
         raise ValueError("IDA dan IDB tidak boleh sama")
     if not n1 or "|" in n1:
         raise ValueError("N1 tidak valid")
-    ks = new_session_key()
-    rep = {
+    return id_a, id_b, n1
+
+
+def build_reply(ka, kb, ks, id_a, id_b, n1):
+    """Susun balasan langkah 2: E(Ka, Ks|IDA|IDB|N1) dan E(Kb, Ks|IDA)."""
+    return {
         "step": 2,
         "type": "KDC_RESPONSE",
-        "enc_for_a": encrypt_text(keys[id_a], f"{ks}|{id_a}|{id_b}|{n1}"),
-        "ticket_for_b": encrypt_text(keys[id_b], f"{ks}|{id_a}"),
+        "enc_for_a": encrypt_text(ka, f"{ks}|{id_a}|{id_b}|{n1}"),
+        "ticket_for_b": encrypt_text(kb, f"{ks}|{id_a}"),
     }
-    return rep, ks
+
+
+def handle_request(keys, msg):
+    """Proses KDC_REQUEST (langkah 1), kembalikan (balasan langkah 2, ks)."""
+    id_a, id_b, n1 = check_request(keys, msg)
+    ks = new_session_key()
+    return build_reply(keys[id_a], keys[id_b], ks, id_a, id_b, n1), ks
 
 
 # 2. Server
 
-def serve_one(keys, conn, addr):
+def serve_one(keys, handler, conn, addr):
     """Layani satu koneksi: terima langkah 1, balas langkah 2."""
     try:
         conn.settimeout(10)
@@ -61,7 +71,7 @@ def serve_one(keys, conn, addr):
         log("KDC", f"(1) Dari {addr[0]}: IDA={msg.get('id_a')}, IDB={msg.get('id_b')}, "
                    f"N1={msg.get('n1')}", PROMPT)
         try:
-            rep, ks = handle_request(keys, msg)
+            rep, ks = handler(keys, msg)
         except ValueError as e:
             send_msg(conn, {"type": "ERROR", "reason": str(e)})
             log("KDC", f"    Ditolak: {e}", PROMPT)
@@ -76,31 +86,54 @@ def serve_one(keys, conn, addr):
         conn.close()
 
 
-def _accept_loop(keys, srv):
+def _accept_loop(keys, handler, srv):
     while True:
         try:
             conn, addr = srv.accept()
         except OSError:
             break
-        threading.Thread(target=serve_one, args=(keys, conn, addr), daemon=True).start()
+        threading.Thread(target=serve_one, args=(keys, handler, conn, addr), daemon=True).start()
 
 
-def start_server(keys, host, port):
+def start_server(keys, host, port, handler=handle_request):
     """Buka listener KDC, terima koneksi di thread terpisah."""
     srv = make_listener(host, port)
-    threading.Thread(target=_accept_loop, args=(keys, srv), daemon=True).start()
-    log("KDC", f"Listening di {host}:{port}", PROMPT)
+    threading.Thread(target=_accept_loop, args=(keys, handler, srv), daemon=True).start()
+    log("KDC", f"Listening di {host}:{port}")
     return srv
 
 
 # 3. CLI
 
 HELP = """Perintah:
-  add <ID> <KEY>   daftarkan / ganti master key milik ID
-  del <ID>         hapus ID dari KDC
-  list             tampilkan tabel master key
-  test             selftest AES
-  quit             keluar"""
+  add <ID> <KEY>         daftarkan / ganti master key milik ID
+  del <ID>               hapus ID dari KDC
+  list                   tampilkan tabel master key
+  test                   selftest AES
+  quit                   keluar"""
+
+
+def command(keys, cmd, arg):
+    """Jalankan satu perintah CLI KDC, False jika perintah tidak dikenal."""
+    if cmd == "add":
+        ident, _, key = arg.partition(" ")
+        old = ident in keys
+        register(keys, ident, key)
+        print(f"  Master key {ident} {'diganti' if old else 'terdaftar'} ({key_variant(key)})")
+    elif cmd == "del":
+        if keys.pop(arg, None) is None:
+            raise ValueError(f"ID '{arg}' tidak terdaftar")
+        print(f"  {arg} dihapus")
+    elif cmd == "list":
+        for i, k in keys.items():
+            print(f"  {i:<10} {k}  ({key_variant(k)})")
+        if not keys:
+            print("  Belum ada ID terdaftar")
+    elif cmd == "test":
+        print("  Semua lulus" if selftest() else "  [!] Ada yang gagal")
+    else:
+        return False
+    return True
 
 
 def main():
@@ -124,26 +157,11 @@ def main():
             break
         cmd, _, arg = line.partition(" ")
         try:
-            if cmd == "add":
-                ident, _, key = arg.partition(" ")
-                register(keys, ident, key)
-                print(f"  {ident} terdaftar ({key_variant(key)})")
-            elif cmd == "del":
-                if keys.pop(arg, None) is None:
-                    raise ValueError(f"ID '{arg}' tidak terdaftar")
-                print(f"  {arg} dihapus")
-            elif cmd == "list":
-                for i, k in keys.items():
-                    print(f"  {i:<10} {k}  ({key_variant(k)})")
-                if not keys:
-                    print("  Belum ada ID terdaftar")
-            elif cmd == "test":
-                print("  Semua lulus" if selftest() else "  [!] Ada yang gagal")
+            if cmd == "quit":
+                break
             elif cmd == "help":
                 print(HELP)
-            elif cmd == "quit":
-                break
-            elif cmd:
+            elif cmd and not command(keys, cmd, arg):
                 print("  [!] Perintah tidak dikenal, ketik help")
         except ValueError as e:
             print(f"  [!] {e}")
