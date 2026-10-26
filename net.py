@@ -1,12 +1,3 @@
-"""
-net.py — utilitas jaringan & tampilan (dipakai KDC dan peer).
-
-Format pesan di jaringan:
-    [4 byte panjang, big-endian][JSON UTF-8]
-JSON dipilih supaya isi paket mudah dibaca di Wireshark (Follow TCP Stream):
-field "step" menunjukkan langkah skenario, field ciphertext berisi HEX.
-"""
-
 import json
 import socket
 import struct
@@ -66,7 +57,7 @@ def make_listener(host, port):
 def make_connection(host, port, bind_ip=None, timeout=10):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if bind_ip and bind_ip not in ("0.0.0.0", ""):
-        s.bind((bind_ip, 0))      # paksa IP sumber (berguna untuk uji 1 mesin)
+        s.bind((bind_ip, 0))      
     s.settimeout(timeout)
     s.connect((host, port))
     return s

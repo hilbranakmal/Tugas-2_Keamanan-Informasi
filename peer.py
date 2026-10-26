@@ -1,19 +1,3 @@
-"""
-peer.py — Program untuk Alice dan Bob (kode sama, beda --id).
-
-Setiap peer:
-  * listen di port sendiri (default 6000) -> bisa menerima tiket (langkah 3)
-  * bisa memulai distribusi key ke peer lain dengan /connect (langkah 1-5)
-  * setelah langkah 5, keduanya bisa KIRIM dan TERIMA pesan AES (dua arah)
-
-Contoh:
-  Bob   : python peer.py --id Bob   --kdc 192.168.1.10:5000
-  Alice : python peer.py --id Alice --kdc 192.168.1.10:5000
-          lalu di Alice: /connect Bob 192.168.1.12
-
-Ketik /help di program untuk daftar perintah.
-"""
-
 import argparse
 import secrets
 import threading
@@ -37,7 +21,7 @@ class Peer:
         self.session = None
         self.mode = "CBC"
         self.lock = threading.Lock()
-        self.inbox = []            # (dari, plaintext, ciphertext) — dipakai pengujian
+        self.inbox = []            
         self._srv = None
 
     @property
@@ -49,7 +33,7 @@ class Peer:
     def _log(self, text):
         log(self.id, text, self.prompt)
 
-    # ---------------- key ----------------
+    # key 
     def set_master_key(self, key):
         validate_key(key)
         self.master_key = key
@@ -60,7 +44,7 @@ class Peer:
             raise ValueError("Belum ada sesi aktif")
         self.session.ks = key
 
-    # ---------------- listener (peran responder / Bob) ----------------
+    # listener
     def start_listener(self):
         self._srv = make_listener(self.bind, self.port)
         threading.Thread(target=self._accept_loop, daemon=True).start()
@@ -81,7 +65,7 @@ class Peer:
                 send_msg(conn, {"type": "BUSY"})
                 conn.close()
                 return
-            # ---- Langkah (3): terima E(Kb, [Ks || IDA]) ----
+            # Langkah (3): terima E(Kb, [Ks || IDA]) 
             msg = recv_msg(conn)
             if not msg or msg.get("type") != "TICKET":
                 conn.close()
@@ -98,13 +82,13 @@ class Peer:
                 return
             self._log(f"    Dekripsi tiket -> Ks='{ks}', IDA={id_a}")
 
-            # ---- Langkah (4): kirim E(Ks, N2) ----
+            # Langkah (4): kirim E(Ks, N2) 
             n2 = secrets.randbelow(10 ** 9)
             c4 = encrypt_text(ks, str(n2), "CBC")
             send_msg(conn, {"step": 4, "type": "CHALLENGE", "data": c4})
             self._log(f"(4) Kirim E(Ks, N2={n2}) = {c4}")
 
-            # ---- Langkah (5): terima E(Ks, f(N2)) ----
+            # Langkah (5): terima E(Ks, f(N2)) 
             msg = recv_msg(conn)
             if not msg or msg.get("type") != "RESPONSE":
                 conn.close()
@@ -129,20 +113,20 @@ class Peer:
             except OSError:
                 pass
 
-    # ---------------- initiator (peran Alice) ----------------
+    # initiator
     def connect(self, peer_id, host, port=6000):
         if self.session:
             raise ValueError("Masih ada sesi aktif, /disconnect dulu")
         if not self.master_key:
             raise ValueError("Master key belum diset")
 
-        # ---- Langkah (1): IDA || IDB || N1 ke KDC ----
+        # Langkah (1): IDA || IDB || N1 ke KDC 
         n1 = secrets.randbelow(10 ** 9)
         k = make_connection(self.kdc_host, self.kdc_port, self.bind)
         try:
             send_msg(k, {"step": 1, "type": "KDC_REQUEST", "id_a": self.id, "id_b": peer_id, "n1": str(n1)})
             self._log(f"(1) Ke KDC {self.kdc_host}:{self.kdc_port}: IDA={self.id}, IDB={peer_id}, N1={n1}")
-            # ---- Langkah (2): balasan KDC ----
+            # Langkah (2): balasan KDC 
             rep = recv_msg(k)
         finally:
             k.close()
@@ -162,13 +146,13 @@ class Peer:
             raise ValueError("Balasan KDC tidak cocok dengan request (IDA/IDB/N1) — kemungkinan replay")
         self._log("    N1 cocok -> balasan KDC fresh dan asli")
 
-        # ---- Langkah (3): kirim tiket ke B ----
+        # Langkah (3): kirim tiket ke B 
         s = make_connection(host, port, self.bind, timeout=15)
         try:
             send_msg(s, {"step": 3, "type": "TICKET", "ticket": rep["ticket_for_b"]})
             self._log(f"(3) Kirim tiket E(Kb,[Ks||IDA]) ke {peer_id} ({host}:{port})")
 
-            # ---- Langkah (4): terima E(Ks, N2) ----
+            # Langkah (4): terima E(Ks, N2) 
             msg = recv_msg(s)
             if not msg:
                 raise ValueError("Peer menutup koneksi")
@@ -177,7 +161,7 @@ class Peer:
             n2 = int(decrypt_hex(ks, msg["data"], "CBC"))
             self._log(f"(4) Terima {msg['data']} -> N2={n2}")
 
-            # ---- Langkah (5): kirim E(Ks, f(N2)) ----
+            # Langkah (5): kirim E(Ks, f(N2)) 
             c5 = encrypt_text(ks, str(n2 + 1), "CBC")
             send_msg(s, {"step": 5, "type": "RESPONSE", "data": c5})
             self._log(f"(5) Kirim E(Ks, f(N2)={n2 + 1}) = {c5}")
@@ -191,7 +175,7 @@ class Peer:
         self._log(f"    Sesi AES dengan {peer_id} aktif. Ks='{ks}' ({key_variant(ks)})")
         self._begin_session(Session(s, peer_id, ks, "initiator"))
 
-    # ---------------- sesi chat dua arah ----------------
+    # sesi chat dua arah 
     def _begin_session(self, sess):
         sess.sock.settimeout(None)
         with self.lock:
